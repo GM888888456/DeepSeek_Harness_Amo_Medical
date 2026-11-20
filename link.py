@@ -67,6 +67,26 @@ def _find(context, names, markers, require_mem=False):
             found = _instance(meta, require_mem)
             if found is not None:
                 return found
+    if require_mem:
+        # 融合态（2026-11-20 五插件版）：记忆不再是独立插件，而是终端里的内嵌数据层。
+        # 只按 DATA_NAMES 找永远找不到 → 「自动喝水」返回 ok 却一分水分都没加。
+        # 这里顺着终端插件把内嵌的数据层拿过来（它有 eat / drink / pantry）。
+        try:
+            terminal = _find(context, TERMINAL_NAMES, TERMINAL_MARKERS)
+        except Exception:
+            terminal = None
+        if terminal is not None:
+            getter = getattr(terminal, "_data_plugin", None)
+            if callable(getter):
+                try:
+                    candidate = getter()
+                except Exception:
+                    candidate = None
+                if candidate is not None and hasattr(candidate, "mem"):
+                    return candidate
+            candidate = getattr(terminal, "mem", None)
+            if candidate is not None:
+                return candidate
     return None
 
 
