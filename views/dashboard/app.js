@@ -38,7 +38,6 @@ const money = (v) => "¥" + Number(v || 0).toFixed(2);
 async function load() {
   const d = await get("status");
   if (!d) { $("status").textContent = "读取失败"; return; }
-  if (d.link) amoLinkRender(d.link);
   const h = d.health || {};
   $("statePill").textContent = h.sick ? "生病中" : "健康";
   $("status").textContent = h.status || "健康";
@@ -107,48 +106,6 @@ waitForBridge(load);
 waitForBridge(loadDrugPrices);
 setInterval(load, 30000);
 setInterval(loadDrugPrices, 300000);
-
-/* ---- 连接状态：我这个挂载插件自己有没有连上终端/记忆库 ---- */
-function amoLinkDot(ok) { return '<span style="color:' + (ok ? "#2e9e5b" : "#d83b3b") + '">\u25cf</span>'; }
-function amoLinkRender(d) {
-  const box = document.getElementById("linkbar");
-  if (!box) return;
-  box.onclick = null;
-  if (!d) {
-    // 失败要能自己说明白、能点重试，别只留一句「读不到」
-    box.innerHTML = '连接状态：读取失败（health 接口没响应，<span style="text-decoration:underline;cursor:pointer">点这里重试</span>）';
-    box.onclick = () => amoLinkLoad();
-    return;
-  }
-  const hb = (typeof d.last_heartbeat === "number" && d.last_heartbeat >= 0)
-    ? ("心跳 " + d.last_heartbeat + " 秒前") : "从未连上过";
-  box.innerHTML = [
-    amoLinkDot(d.terminal_connected) + " 终端" + (d.terminal_connected ? " v" + (d.terminal_version || "?") : " 未连接"),
-    amoLinkDot(d.data_connected) + " 记忆库" + (d.data_connected ? " v" + (d.data_version || "?") : " 未连接"),
-    "bot_id " + (d.bot_id || "\u2014"),
-    hb
-  ].join(' <span style="opacity:.35">\uff5c</span> ');
-  box.title = d.error || "";
-}
-
-async function amoLinkFetch() {
-  try { return await get("health"); } catch (e) { return null; }
-}
-async function amoLinkLoad() {
-  // 面板脚本比 AstrBot 的桥接先跑，头几次拿不到数据是正常的：
-  // 等桥接就绪再重试，别一上来就把「读不到」画给人看。
-  const box = document.getElementById("linkbar");
-  if (box && /检查中|读取失败/.test(box.textContent || "")) box.textContent = "连接状态：读取中…";
-  for (let i = 0; i < 20; i += 1) {
-    const d = await amoLinkFetch();
-    if (d) { amoLinkRender(d); return; }
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  }
-  amoLinkRender(null);
-}
-
-amoLinkLoad();
-setInterval(amoLinkLoad, 30000);
 
 /* 生理期设置：双击「医疗」标题打开（数值由终端算，这里只转发） */
 
