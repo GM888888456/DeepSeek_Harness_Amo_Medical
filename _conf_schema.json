@@ -29,12 +29,6 @@
     "default": true,
     "hint": "打开后，不严重的病有概率先不去医院，拖重了才去。这比「一生病就去」像人。"
   },
-  "insurance_enable": {
-    "type": "bool",
-    "description": "启用医保",
-    "default": true,
-    "hint": "门诊报 70%、住院报 85%，超过 2 万再二次报销 60%。关掉就全额自费。"
-  },
   "worsen_enable": {
     "type": "bool",
     "description": "不治会变重",
