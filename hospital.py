@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 HOSPITAL = {
-    "name": "中国陆军医疗医院",
+    "name": "中国陆军军区医院",
     "level": "三级甲等",
     "since": 1958,
     "phone": "0851-8xx xxxx（总机）",
