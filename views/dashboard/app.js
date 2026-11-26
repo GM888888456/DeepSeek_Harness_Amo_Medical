@@ -126,8 +126,9 @@ function bindPeriodDialog() {
   });
   const save = $("periodSave");
   if (save) save.addEventListener("click", async () => {
-    if (info) {
-      $("periodHint").textContent = "已保存：周期 " + (info.cycle_days || "?") + " 天";
+    const r = await post("period", {});
+    if (r && (r.cycle_days || r.ok)) {
+      $("periodHint").textContent = "已保存：周期 " + (r.cycle_days || "?") + " 天";
     } else {
       $("periodHint").textContent = "保存失败：终端没连上";
     }

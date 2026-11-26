@@ -524,49 +524,99 @@ class AmoMedicalPlugin(Star):
     # 治疗：先要钱，再治病
     # ------------------------------------------------------------------
 
+    def _hospital(self):
+        """医院数据层（hospital.py）。拿不到就 None，退回老算法。"""
+        try:
+            from . import hospital as _h  # type: ignore
+            return _h
+        except Exception:
+            pass
+        try:
+            import hospital as _h  # type: ignore
+            return _h
+        except Exception:
+            pass
+        try:
+            import importlib.util as _ilu
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hospital.py")
+            spec = _ilu.spec_from_file_location("amo_hospital", path)
+            mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            return mod
+        except Exception as exc:
+            logger.debug("[amo_med] 医院数据层加载失败: %s" % exc)
+            return None
+
     def quote(self) -> dict[str, Any]:
-        """报个价：总费用、医保报多少、自付多少，**以及钱花在哪、吃什么药**。"""
+        """报个价：先去哪科、挂什么号、开什么检查，医保报多少、自己要掏多少。
+
+        2026-11-25（用户口径）：医疗改成医院——挂号 + 诊疗 + 检查 + 药，
+        按职工医保结算；钱还是请终端扣，扣不到不治。
+        """
         current = get_illness(self._health.illness)
         if current is None:
             return {"ok": False, "reason": "现在没病"}
+
         plan = treatment_plan(current, self._rng)
-        total = float(plan.get("total") or 0.0)
-        # 药价改查市场：同一名字的药，用市场当天价，并把差额算进总额
+        meds = plan.get("medicines") or []
+        medicine = round(sum(float(m.get("price") or 0) for m in meds), 2)
+
+        hosp = self._hospital()
+        if hosp is None:
+            # 兜底：老算法（目录已经删了，理论上走不到这里）
+            total = float(plan.get("total") or 0.0)
+            split = insurance_split(total, current.admission)
+            return {
+                "ok": True, "illness": current.key, "name": current.name,
+                "admission": current.admission,
+                "total": split["total"], "reimbursed": split["reimbursed"],
+                "self_pay": split["self_pay"],
+                "mode": plan.get("mode"), "mode_label": plan.get("mode_label"),
+                "items": plan.get("items") or [], "medicines": meds,
+                "advice": plan.get("advice") or "",
+            }
+
+        # 挂什么号：手头宽裕走特需，一般走专家，紧的时候排普通号
         try:
-            market = self._market_drug_prices()
-            if market:
-                meds = plan.get("medicines") or []
-                old_med = sum(float(m.get("price") or 0) for m in meds)
-                new_med = 0.0
-                for med in meds:
-                    price = market.get(str(med.get("name") or ""))
-                    if price:
-                        med["price"] = round(float(price), 2)
-                    new_med += float(med.get("price") or 0)
-                if meds and abs(new_med - old_med) > 0.01:
-                    delta = round(new_med - old_med, 2)
-                    total = round(max(0.0, total + delta), 2)
-                    plan["total"] = total
-                    for row in plan.get("items") or []:
-                        if str(row.get("kind")) == "medicine":
-                            row["price"] = round(new_med, 2)
-        except Exception as exc:
-            logger.debug("[amo_med] 药价接市场失败: %s" % exc)
-        split = insurance_split(total, current.admission)
-        # 医保个人账户能抵一部分自付
+            balance = float(self._companion_balance() or 0)
+        except Exception:
+            balance = 0.0
+        if balance >= 5000:
+            tier = "特需"
+        elif balance >= 800:
+            tier = "专家"
+        else:
+            tier = "普通"
+
+        dept = hosp.dept_for(current.key)
+        want = 2 if current.admission else 1
+        exams = [x["name"] for x in hosp.exam_list(dept["id"])[:want]]
+        clinic = {"普通": 15.0, "专家": 30.0, "特需": 80.0}.get(tier, 30.0)
+        bill = hosp.visit(current.key, tier, exams, medicine=medicine, clinic_fee=clinic)
+
         return {
             "ok": True,
             "illness": current.key,
             "name": current.name,
             "admission": current.admission,
-            "total": split["total"],
-            "reimbursed": split["reimbursed"],
-            "self_pay": split["self_pay"],
+            "total": bill["gross"],
+            "reimbursed": bill["reimburse"],
+            "self_pay": bill["self_pay"],
             "mode": plan.get("mode"),
-            "mode_label": plan.get("mode_label"),
-            "items": plan.get("items") or [],
-            "medicines": plan.get("medicines") or [],
+            "mode_label": "%s · %s · %s号" % (dept["name"], dept["head"], tier),
+            "items": bill["items"],
+            "medicines": meds,
             "advice": plan.get("advice") or "",
+            "hospital": {
+                "name": hosp.HOSPITAL["name"],
+                "floor": dept["floor"],
+                "dept": dept["name"],
+                "doctor": dept["head"],
+                "tier": tier,
+                "wait": dept.get("wait") or "",
+                "exams": exams,
+                "insurance": bill.get("type") or "",
+            },
         }
 
     def _market_drug_prices(self) -> dict[str, float]:
@@ -853,6 +903,7 @@ class AmoMedicalPlugin(Star):
     def _register_web_apis(self) -> None:
         routes = [
             ("/status", self.api_status, ["GET"]),
+            ("/hospital", self.api_hospital, ["GET", "POST"]),
             ("/health", self.api_health, ["GET"]),
             ("/history", self.api_history, ["GET"]),
             ("/treat", self.api_treat, ["POST"]),
@@ -1043,6 +1094,84 @@ class AmoMedicalPlugin(Star):
         """我自己连没连上终端/记忆库。面板顶部那一行就看这个。"""
         self._sync_config()
         return self._json({"code": 0, "data": _link_probe(self)})
+
+    def hospital_data(self) -> dict:
+        """医院面板：总览 / 科室 / 检查 / 病房 / 医保。"""
+        h = self._hospital()
+        if h is None:
+            return {"sections": [], "items": {}}
+        items, sections = {}, []
+        prof = h.HOSPITAL
+
+        group = [
+            {"name": "等级", "price": 0, "unit": "", "note": prof["level"]},
+            {"name": "床位", "price": prof["beds"], "unit": "张", "note": "员工 %d 人" % prof["staff"]},
+            {"name": "科室", "price": len(h.DEPARTMENTS), "unit": "个", "note": "院长 " + prof["dean"]},
+            {"name": "检查项目", "price": len(h.EXAMS), "unit": "项", "note": "含影像与内镜"},
+            {"name": "门诊起付", "price": h.INSURANCE["outpatient"]["threshold"], "unit": "元",
+             "note": "报 %.0f%%" % (h.INSURANCE["outpatient"]["ratio"] * 100)},
+            {"name": "住院起付", "price": h.INSURANCE["inpatient"]["threshold"], "unit": "元",
+             "note": "报 %.0f%%" % (h.INSURANCE["inpatient"]["ratio"] * 100)},
+        ]
+        for x in group:
+            x.update({"category": "总览", "source": "hospital"})
+        items["group"] = group
+        sections.append({"id": "group", "title": "医院总览", "count": len(group), "items": group})
+
+        depts = []
+        for d in h.DEPARTMENTS:
+            fees = d.get("fees") or {}
+            depts.append({
+                "name": d["name"], "price": fees.get("专家") or 0, "unit": "元",
+                "note": "%s · %s｜%s" % (d["head"], d["floor"], d["focus"]),
+                "category": "科室", "head": d["head"], "floor": d["floor"],
+                "focus": d["focus"], "wait": d.get("wait"), "fees": fees,
+                "exams": d.get("exams"), "source": "hospital",
+            })
+        items["departments"] = depts
+        sections.append({"id": "departments", "title": "科室 · %d 个" % len(depts),
+                         "count": len(depts), "items": depts})
+
+        exams = []
+        for name, info in h.EXAMS.items():
+            exams.append({"name": name, "price": info["price"], "unit": "元",
+                          "note": "%s 分钟｜%s" % (info["mins"], info["note"]),
+                          "category": "检查", "source": "hospital"})
+        exams.sort(key=lambda x: x["price"])
+        items["exams"] = exams
+        sections.append({"id": "exams", "title": "检查项目 · %d 项" % len(exams),
+                         "count": len(exams), "items": exams})
+
+        wards = []
+        for name, info in h.WARDS.items():
+            wards.append({"name": name, "price": info["daily"], "unit": "元/天",
+                          "note": "押金 %d 元｜%s" % (info["deposit"], info["note"]),
+                          "category": "病房", "source": "hospital"})
+        items["wards"] = wards
+        sections.append({"id": "wards", "title": "病房 · %d 类" % len(wards),
+                         "count": len(wards), "items": wards})
+
+        ins = [
+            {"name": "类型", "price": 0, "unit": "", "note": h.INSURANCE["type"], "category": "医保", "source": "hospital"},
+            {"name": "门诊", "price": h.INSURANCE["outpatient"]["ratio"] * 100, "unit": "%",
+             "note": "起付 %d 元，封顶 %d 元" % (h.INSURANCE["outpatient"]["threshold"], h.INSURANCE["outpatient"]["cap"])},
+            {"name": "住院", "price": h.INSURANCE["inpatient"]["ratio"] * 100, "unit": "%",
+             "note": "起付 %d 元，封顶 %d 元" % (h.INSURANCE["inpatient"]["threshold"], h.INSURANCE["inpatient"]["cap"])},
+        ]
+        items["insurance"] = ins
+        sections.append({"id": "insurance", "title": "医保", "count": len(ins), "items": ins})
+
+        return {"sections": sections, "items": items,
+                "hospital": {"name": prof["name"], "level": prof["level"], "note": prof["note"]}}
+
+    async def api_hospital(self):
+        params = {}
+        try:
+            if web_request is not None and hasattr(web_request, "query"):
+                params.update(dict(web_request.query))
+        except Exception:
+            pass
+        return self._json({"code": 0, "data": self.hospital_data()})
 
     async def api_status(self):
         self._sync_config()

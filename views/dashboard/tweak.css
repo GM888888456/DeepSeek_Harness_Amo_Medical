@@ -1,0 +1,49 @@
+/* ===== 微调层（2026-11-26）：字号整体小两档 + 控件右对齐 ===== */
+/* 字号：正文 12、标题 14、次要 10.5~11、数字 12 */
+body { font-size: 12px; line-height: 1.5; }
+.label { font-size: 10.5px; letter-spacing: .3px; }
+.value { font-size: 12px; }
+.sub, .hint, .meta { font-size: 10.5px; }
+.dominant, .card-title span:first-child, .card-hd h2 { font-size: 14px; }
+.hero-score, .brand { font-size: 15px; }
+.brand { font-weight: 650; }
+.clock { font-size: 10.5px; }
+.kv dt { font-size: 11px; }
+.kv dd { font-size: 12px; }
+.list li, .row, .pick { font-size: 12px; }
+.list .s, .list .t { font-size: 10.5px; }
+.empty { font-size: 11.5px; }
+.pill, .chip, .badge, .tag, .phase-chip { font-size: 9.5px; line-height: 13px; padding: 1px 6px; }
+.field, .field label { font-size: 11px; }
+input, select, textarea, .field input, .field select, .field textarea, .input { font-size: 12px; padding: 7px 10px; }
+button, .btn { font-size: 12px; padding: 7px 11px; border-radius: 10px; }
+.btn.sm, .icon-btn, button.sm { font-size: 10.5px; padding: 3px 8px; border-radius: 8px; }
+
+/* 版式：文字一律左对齐；只有控件（按钮/开关/输入）靠右 */
+.card .row.between > div,
+.card .row.between > span { text-align: left; }
+.foot, .sheet-ft, .card-ft, .seg-foot, .row.actions {
+  justify-content: flex-end; display: flex; gap: 8px; flex-wrap: wrap;
+}
+.card button:not(.tab), .card .btn, .sheet button { margin-left: auto; }
+.card .row.between > div:has(button), .card .row.between > span:has(button) { margin-left: auto; }
+.list li > :last-child, .kv dd, .row .r, .pick .v { text-align: left; }
+/* 按钮仍然靠右 */
+.foot, .sheet-ft, .card-ft, .seg-foot, .row.actions { justify-content: flex-end; }
+.card button:not(.tab), .card .btn, .sheet button { margin-left: auto; }
+/* 顶栏：控件贴右 */
+header > :last-child, .hd-r { margin-left: auto; }
+
+/* 列表行：名字占左，右侧控件（件数/今天穿/删）整体贴右 */
+.list li { justify-content: flex-start; align-items: center; }
+.list li > :first-child { flex: 1 1 auto; min-width: 0; overflow: hidden;
+                           text-overflow: ellipsis; white-space: nowrap; }
+.list li > :nth-child(2) { margin-left: auto; }
+.list li > :not(:first-child) { flex: 0 0 auto; margin-left: 8px; }
+/* 行内的小按钮/链接不撑满，按内容宽 */
+.list li .link, .list li .wear, .list li .del, .list li button {
+  width: auto; padding: 2px 8px; border-radius: 8px; font-size: 11px; line-height: 1.4;
+  border: 1px solid var(--line); background: var(--card); color: var(--muted);
+}
+.list li .link:hover, .list li .wear:hover, .list li .del:hover,
+.list li button:hover { border-color: var(--pink); color: var(--pink); }

@@ -3,52 +3,231 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>我想永远陪着你-医疗</title>
-  <link rel="stylesheet" href="./style.css" />
+  <meta name="theme-color" content="#f4f4f6" />
+  <title>中国陆军医疗医院 · 门诊台</title>
+  <link rel="stylesheet" href="./terminal-base.css?v=5" />
+  <link rel="stylesheet" href="./tweak.css?v=5" />
+  <style>
+    .pick { display: flex; width: 100%; text-align: left; gap: 10px; align-items: baseline;
+            justify-content: space-between; padding: 8px 0; border: 0;
+            border-bottom: 1px solid var(--line); background: transparent; color: var(--text);
+            font: inherit; font-size: 12px; cursor: pointer; border-radius: 0; }
+    .pick:last-child { border-bottom: 0; }
+    .pick:hover { color: var(--pink); }
+    .pick .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pick .v { color: var(--muted); font-size: 10.5px; white-space: nowrap; flex: 0 0 auto; }
+    .pick .g { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px;
+               background: var(--hover); color: var(--muted); font-size: 10px; flex: 0 0 auto; }
+    .badge { font-size: 9.5px; line-height: 13px; padding: 1px 6px; border-radius: 99px;
+             border: 1px solid var(--line); color: var(--muted); }
+    .badge.on { border-color: var(--pink); color: var(--pink); }
+  </style>
 </head>
 <body>
-  <div class="wrap">
-    <header>
-      <div class="brand" id="brandTitle"><span class="dot"></span><span>我想永远陪着你 · 医疗</span></div>
-    </header>
+<div class="wrap">
+  <header>
+    <div class="brand"><span class="dot"></span> 中国陆军医疗医院</div>
+    <div class="clock" id="clock">--</div>
+  </header>
+  <nav class="tabs" id="flow"></nav>
+  <div class="sub" id="tip" style="color:var(--pink2)"></div>
+  <div id="stage"></div>
+</div>
 
-    <div class="card">
-      <div id="quoteCard">
-      <div class="card-title"><span>身体</span></div>
-      <div class="split">
-        <div class="col">
-          <dl class="kv">
-            <dt>健康</dt><dd id="statePill">—</dd>
-            <dt>症状</dt><dd id="status">—</dd>
-            <dt>描述</dt><dd id="note">—</dd>
-            <dt>是否就医</dt><dd id="treated">—</dd>
-            <dt>医保已用</dt><dd id="used">—</dd>
-          </dl>
-          <div class="meta" id="timeHint"></div>
-        </div>
-        <div class="col">
-          <div class="sub-title">治疗报价</div>
-          <dl class="kv">
-            <dt>总费用</dt><dd id="total">—</dd>
-            <dt>医保报销</dt><dd id="reimbursed">—</dd>
-            <dt>需自付</dt><dd id="selfpay">—</dd>
-          </dl>
-          <div class="meta" id="autoHint">—</div>
-        </div>
-      </div>
-      </div>
+<script>
+(function () {
+  var bridge = null, DATA = null, STATUS = null;
+  var nav = [{ s: "home", c: {}, t: "总览" }], cur = 0;
 
-      <div class="sep"></div>
-      <div class="card-title"><span>今日药价</span><span class="hint" id="drugHint">—</span></div>
-      <ul class="list" id="drugPrices"><li class="empty">加载中…</li></ul>
+  function resolve() {
+    if (bridge) return bridge;
+    var c = [];
+    try { c.push(window.AstrBotPluginView, window.AstrBotPluginPage); } catch (e) {}
+    try { c.push(window.parent.AstrBotPluginView, window.parent.AstrBotPluginPage); } catch (e) {}
+    bridge = c.find(function (b) { return b && typeof b.apiGet === "function"; }) || null;
+    return bridge;
+  }
+  function wait(fn, n) {
+    n = (n == null) ? 60 : n;
+    if (resolve()) { fn(); return; }
+    if (n > 0) setTimeout(function () { wait(fn, n - 1); }, 120);
+  }
+  function unwrap(r) { var v = r; if (v && typeof v === "object" && "data" in v) v = v.data; return v; }
+  async function get(p) { var b = resolve(); try { return b ? unwrap(await b.apiGet(p)) : null; } catch (e) { return null; } }
+  function el(id) { return document.getElementById(id); }
+  function h(tag, cls, txt) { var n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; }
+  function clear(x) { while (x.firstChild) x.removeChild(x.firstChild); }
+  function yuan(n) { var v = Number(n || 0); return "¥" + (Math.round(v * 100) / 100); }
+  function I(id) { return ((DATA && DATA.items) || {})[id] || []; }
 
-      <div class="sep"></div>
-      <div class="card-title"><span>就医记录</span></div>
-      <ul class="list" id="history"><li class="empty">还没有记录</li></ul>
-    </div>
+  function paint() {
+    var f = el("flow"); clear(f);
+    nav.slice(0, cur + 1).forEach(function (n, i) {
+      var b = h("button", "tab" + (i === cur ? " on" : ""), n.t || "—");
+      b.type = "button";
+      b.addEventListener("click", function () { if (i < cur) { cur = i; render(); } });
+      f.appendChild(b);
+    });
+  }
+  function push(s, c, t) { nav = nav.slice(0, cur + 1); nav.push({ s: s, c: c || {}, t: t || "" }); cur = nav.length - 1; }
+  function back() { if (cur > 0) { cur -= 1; render(); } }
+  function card(title, right) {
+    var sec = h("section", "card");
+    var row = h("div", "row between");
+    row.appendChild(h("div", "label", title));
+    if (right) row.appendChild(h("div", "sub", right));
+    sec.appendChild(row);
+    return sec;
+  }
+  function pick(title, sub, o) {
+    o = o || {};
+    var b = h("button", "pick");
+    b.type = "button"; b.title = title || "";
+    if (o.icon) b.appendChild(h("span", "g", o.icon));
+    if (!o.icon) b.appendChild(h("span", "t", title || ""));
+    b.appendChild(h("span", "v", sub || ""));
+    b.addEventListener("click", o.onClick || function () {});
+    return b;
+  }
+  function kv(sec, label, value) {
+    var r = h("div", "row between");
+    r.appendChild(h("div", "sub", label));
+    r.appendChild(h("div", "value", value));
+    sec.appendChild(r);
+  }
+  function stat(sec, label, value, sub) {
+    var grid = sec.querySelector(".status-grid");
+    if (!grid) { grid = h("div", "status-grid"); sec.appendChild(grid); }
+    var it = h("div", "status-item");
+    it.appendChild(h("div", "label", label));
+    it.appendChild(h("div", "value", value));
+    if (sub) it.appendChild(h("div", "sub", sub));
+    grid.appendChild(it);
+  }
+  function foot(sec, note, actions) {
+    var r = h("div", "row between"); r.style.marginTop = "12px";
+    r.appendChild(h("div", "sub", note || ""));
+    var box = h("div");
+    (actions || []).forEach(function (a) {
+      var b = h("button", "tab", a.text); b.type = "button";
+      b.addEventListener("click", a.onClick || function () {}); box.appendChild(b);
+    });
+    r.appendChild(box); sec.appendChild(r);
+  }
 
-  </div>
+  var V = {};
 
-  <script src="./app.js?v=1.5.4"></script>
+  V.home = function (wrap) {
+    var g = I("group");
+    var c = card("医院总览", (DATA && DATA.hospital && DATA.hospital.level) || "");
+    g.forEach(function (x) {
+      stat(c, x.name, x.unit === "" ? (x.note ? "—" : "—") : (x.price + " " + x.unit), x.note);
+    });
+    wrap.appendChild(c);
+
+    var st = (STATUS && STATUS.health) || {};
+    var q = (STATUS && STATUS.quote) || {};
+    var c2 = card("她自己", st.status || "健康");
+    if (st.sick && q.ok) {
+      kv(c2, "症状", st.note || st.status || "—");
+      kv(c2, "总费用", yuan(q.total));
+      kv(c2, "医保报销", yuan(q.reimbursed));
+      kv(c2, "需自付", yuan(q.self_pay));
+      if (q.mode_label) c2.appendChild(h("div", "sub", q.mode_label));
+    } else {
+      c2.appendChild(h("div", "sub", "现在没病，不用看。"));
+    }
+    kv(c2, "医保已用", yuan(STATUS && STATUS.used_insurance));
+    wrap.appendChild(c2);
+
+    var c3 = card("去看病");
+    c3.appendChild(pick("科室", I("departments").length + " 个", { icon: "科", onClick: function () { push("depts", {}, "科室"); render(); } }));
+    c3.appendChild(pick("检查", I("exams").length + " 项", { icon: "检", onClick: function () { push("exams", {}, "检查"); render(); } }));
+    c3.appendChild(pick("病房", I("wards").length + " 类", { icon: "床", onClick: function () { push("wards", {}, "病房"); render(); } }));
+    c3.appendChild(pick("医保", "起付与报销", { icon: "保", onClick: function () { push("ins", {}, "医保"); render(); } }));
+    wrap.appendChild(c3);
+  };
+
+  V.depts = function (wrap) {
+    var c = card("科室", I("departments").length + " 个");
+    I("departments").forEach(function (d) {
+      c.appendChild(pick(d.name, d.head + " · 专家号 " + d.price + " 元", {
+        onClick: function () { push("dept", { d: d }, d.name); render(); } }));
+    });
+    foot(c, "", [{ text: "返回", onClick: back }]);
+    wrap.appendChild(c);
+  };
+
+  V.dept = function (wrap, ctx) {
+    var d = ctx.d || {};
+    var c = card(d.name, d.floor || "");
+    c.appendChild(h("div", "sub", "主任：" + (d.head || "—") + "　擅长：" + (d.focus || "")));
+    var fees = d.fees || {};
+    kv(c, "普通号", (fees["普通"] || 0) + " 元");
+    kv(c, "专家号", (fees["专家"] || 0) + " 元");
+    kv(c, "特需号", (fees["特需"] || 0) + " 元");
+    kv(c, "候诊", d.wait || "—");
+    if (d.exams && d.exams.length) {
+      c.appendChild(h("div", "row between", "").appendChild(h("div", "label", "常开的检查")).parentNode);
+      d.exams.forEach(function (name) {
+        var hit = I("exams").filter(function (x) { return x.name === name; })[0];
+        kv(c, name, hit ? (hit.price + " 元") : "—");
+      });
+    }
+    foot(c, "", [{ text: "返回", onClick: back }]);
+    wrap.appendChild(c);
+  };
+
+  V.exams = function (wrap) {
+    var c = card("检查项目", I("exams").length + " 项");
+    I("exams").forEach(function (x) {
+      c.appendChild(pick(x.name, x.price + " 元", {
+        onClick: function () { tipBox(x.name + "：" + x.note); } }));
+    });
+    foot(c, "", [{ text: "返回", onClick: back }]);
+    wrap.appendChild(c);
+  };
+
+  V.wards = function (wrap) {
+    var c = card("病房", I("wards").length + " 类");
+    I("wards").forEach(function (x) { kv(c, x.name, x.note); });
+    foot(c, "", [{ text: "返回", onClick: back }]);
+    wrap.appendChild(c);
+  };
+
+  V.ins = function (wrap) {
+    var c = card("医保", (I("insurance")[0] || {}).note || "");
+    I("insurance").forEach(function (x) {
+      if (x.name === "类型") return;
+      kv(c, x.name, Math.round(x.price) + "%　" + x.note);
+    });
+    foot(c, "", [{ text: "返回", onClick: back }]);
+    wrap.appendChild(c);
+  };
+
+  function tipBox(msg) {
+    var t = el("tip");
+    t.textContent = msg || "";
+  }
+
+  function render() {
+    paint();
+    var box = el("stage"); clear(box);
+    var n = nav[cur];
+    (V[n.s] || V.home)(box, n.c || {});
+  }
+  async function reload() {
+    DATA = await get("hospital");
+    STATUS = await get("status");
+  }
+  function clock() {
+    var t = el("clock"); if (!t) return; var d = new Date();
+    t.textContent = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+  }
+  clock(); setInterval(clock, 20000);
+  async function boot() { await reload(); render(); }
+  wait(boot);
+})();
+</script>
 </body>
 </html>
