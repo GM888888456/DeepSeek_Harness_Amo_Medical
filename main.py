@@ -524,6 +524,19 @@ class AmoMedicalPlugin(Star):
     # 治疗：先要钱，再治病
     # ------------------------------------------------------------------
 
+    def _hospital_live(self):
+        """医院实时业务层：挂号/候诊/检查/住院/出院。"""
+        try:
+            from . import hospital_live as _hl  # type: ignore
+            return _hl
+        except Exception:
+            pass
+        try:
+            import hospital_live as _hl  # type: ignore
+            return _hl
+        except Exception:
+            return None
+
     def _hospital(self):
         """医院数据层（hospital.py）。拿不到就 None，退回老算法。"""
         try:
@@ -1165,13 +1178,55 @@ class AmoMedicalPlugin(Star):
                 "hospital": {"name": prof["name"], "level": prof["level"], "note": prof["note"]}}
 
     async def api_hospital(self):
+        """医院总览 + 真正业务动作。action:
+        checkin / consult / finish / admit / discharge / reset。
+        """
         params = {}
         try:
             if web_request is not None and hasattr(web_request, "query"):
                 params.update(dict(web_request.query))
         except Exception:
             pass
-        return self._json({"code": 0, "data": self.hospital_data()})
+        try:
+            body = await self._payload()
+            if isinstance(body, dict):
+                params.update(body)
+        except Exception:
+            pass
+        action = str(params.get("action") or "").strip().lower()
+        live = self._hospital_live()
+        data_dir = self._data_dir()
+        if live:
+            if action == "checkin":
+                res = live.checkin(data_dir, str(params.get("patient") or "阿墨"),
+                                   str(params.get("illness") or ""), str(params.get("tier") or "专家"))
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "consult":
+                res = live.start_visit(data_dir, str(params.get("visit_id") or ""))
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "finish":
+                exams = params.get("exams")
+                if isinstance(exams, str):
+                    exams = [x.strip() for x in exams.split(",") if x.strip()]
+                try: medicine = float(params.get("medicine") or 0); clinic_fee = float(params.get("clinic_fee") or 0)
+                except Exception: medicine = clinic_fee = 0.0
+                res = live.finish_visit(data_dir, str(params.get("visit_id") or ""), exams, medicine, clinic_fee)
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "admit":
+                try: days = int(float(params.get("days") or 3)); treat_fee = float(params.get("treat_fee") or 0)
+                except Exception: days, treat_fee = 3, 0.0
+                res = live.admit(data_dir, str(params.get("patient") or "阿墨"), days,
+                                 str(params.get("room") or "双人间"), treat_fee)
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "discharge":
+                res = live.discharge(data_dir, str(params.get("admission_id") or ""))
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "reset":
+                return self._json({"code": 0, "data": live.reset(data_dir)})
+        data = self.hospital_data()
+        if live:
+            data["live"] = live.snapshot(data_dir)
+        return self._json({"code": 0, "data": data})
 
     async def api_status(self):
         self._sync_config()
