@@ -230,11 +230,13 @@ class AmoMedicalPlugin(Star):
         history = data.get("history")
         self._history = list(history) if isinstance(history, list) else []
         self._period_start = str(data.get("period_start") or "")
+        self._hospital_visit_id = str(data.get("hospital_visit_id") or "")
 
     def _save(self) -> None:
         payload = {"health": self._health.as_dict(), "history": self._history[-200:],
                    "last_roll": self._last_roll,
-                   "period_start": str(getattr(self, "_period_start", "") or "")}
+                   "period_start": str(getattr(self, "_period_start", "") or ""),
+                   "hospital_visit_id": str(getattr(self, "_hospital_visit_id", "") or "")}
         try:
             tmp = self._state_path() + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
@@ -524,6 +526,19 @@ class AmoMedicalPlugin(Star):
     # 治疗：先要钱，再治病
     # ------------------------------------------------------------------
 
+    def _hospital_live(self):
+        """医院实时业务层：挂号/候诊/检查/住院/出院。"""
+        try:
+            from . import hospital_live as _hl  # type: ignore
+            return _hl
+        except Exception:
+            pass
+        try:
+            import hospital_live as _hl  # type: ignore
+            return _hl
+        except Exception:
+            return None
+
     def _hospital(self):
         """医院数据层（hospital.py）。拿不到就 None，退回老算法。"""
         try:
@@ -593,6 +608,15 @@ class AmoMedicalPlugin(Star):
         exams = [x["name"] for x in hosp.exam_list(dept["id"])[:want]]
         clinic = {"普通": 15.0, "专家": 30.0, "特需": 80.0}.get(tier, 30.0)
         bill = hosp.visit(current.key, tier, exams, medicine=medicine, clinic_fee=clinic)
+        live = self._hospital_live()
+        if live and not getattr(self, "_hospital_visit_id", ""):
+            try:
+                reg = live.checkin(self._data_dir(), "阿墨", current.key, tier)
+                if reg.get("ok"):
+                    self._hospital_visit_id = str((reg.get("visit") or {}).get("id") or "")
+                    self._save()
+            except Exception as exc:
+                logger.debug("[amo_med] 实时挂号失败，继续按医院报价: %s", exc)
 
         return {
             "ok": True,
@@ -607,6 +631,7 @@ class AmoMedicalPlugin(Star):
             "items": bill["items"],
             "medicines": meds,
             "advice": plan.get("advice") or "",
+            "hospital_visit_id": str(getattr(self, "_hospital_visit_id", "") or ""),
             "hospital": {
                 "name": hosp.HOSPITAL["name"],
                 "floor": dept["floor"],
@@ -813,6 +838,17 @@ class AmoMedicalPlugin(Star):
                     "medicines": info.get("medicines") or [],
                     "advice": info.get("advice") or ""}
 
+        # 真正医院链：付款成功后才结束本次挂号；没付款就一直停在候诊/诊疗状态。
+        live = self._hospital_live()
+        visit_id = str(info.get("hospital_visit_id") or getattr(self, "_hospital_visit_id", "") or "")
+        if live and visit_id:
+            try:
+                live.finish_visit(self._data_dir(), visit_id, info.get("exams") or None,
+                                  float(sum(float(m.get("price") or 0) for m in (info.get("medicines") or []))),
+                                  30.0)
+            except Exception as exc:
+                logger.debug("[amo_med] 医院结诊记录失败: %s", exc)
+        self._hospital_visit_id = ""
         illness = get_illness(info["illness"])
         recovery_hours = max(2, int((illness.hours if illness else 12) / 2))
         # 病结束：状态进入「恢复中」，不再算 sick，后台循环也就不会重复来治
@@ -1165,13 +1201,55 @@ class AmoMedicalPlugin(Star):
                 "hospital": {"name": prof["name"], "level": prof["level"], "note": prof["note"]}}
 
     async def api_hospital(self):
+        """医院总览 + 真正业务动作。action:
+        checkin / consult / finish / admit / discharge / reset。
+        """
         params = {}
         try:
             if web_request is not None and hasattr(web_request, "query"):
                 params.update(dict(web_request.query))
         except Exception:
             pass
-        return self._json({"code": 0, "data": self.hospital_data()})
+        try:
+            body = await self._payload()
+            if isinstance(body, dict):
+                params.update(body)
+        except Exception:
+            pass
+        action = str(params.get("action") or "").strip().lower()
+        live = self._hospital_live()
+        data_dir = self._data_dir()
+        if live:
+            if action == "checkin":
+                res = live.checkin(data_dir, str(params.get("patient") or "阿墨"),
+                                   str(params.get("illness") or ""), str(params.get("tier") or "专家"))
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "consult":
+                res = live.start_visit(data_dir, str(params.get("visit_id") or ""))
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "finish":
+                exams = params.get("exams")
+                if isinstance(exams, str):
+                    exams = [x.strip() for x in exams.split(",") if x.strip()]
+                try: medicine = float(params.get("medicine") or 0); clinic_fee = float(params.get("clinic_fee") or 0)
+                except Exception: medicine = clinic_fee = 0.0
+                res = live.finish_visit(data_dir, str(params.get("visit_id") or ""), exams, medicine, clinic_fee)
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "admit":
+                try: days = int(float(params.get("days") or 3)); treat_fee = float(params.get("treat_fee") or 0)
+                except Exception: days, treat_fee = 3, 0.0
+                res = live.admit(data_dir, str(params.get("patient") or "阿墨"), days,
+                                 str(params.get("room") or "双人间"), treat_fee)
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "discharge":
+                res = live.discharge(data_dir, str(params.get("admission_id") or ""))
+                return self._json({"code": 0 if res.get("ok") else 1, "data": res})
+            if action == "reset":
+                return self._json({"code": 0, "data": live.reset(data_dir)})
+        data = self.hospital_data()
+        if live:
+            data["live"] = live.snapshot(data_dir)
+        return self._json({"code": 0, "data": data})
 
     async def api_status(self):
         self._sync_config()
