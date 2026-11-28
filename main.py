@@ -230,11 +230,13 @@ class AmoMedicalPlugin(Star):
         history = data.get("history")
         self._history = list(history) if isinstance(history, list) else []
         self._period_start = str(data.get("period_start") or "")
+        self._hospital_visit_id = str(data.get("hospital_visit_id") or "")
 
     def _save(self) -> None:
         payload = {"health": self._health.as_dict(), "history": self._history[-200:],
                    "last_roll": self._last_roll,
-                   "period_start": str(getattr(self, "_period_start", "") or "")}
+                   "period_start": str(getattr(self, "_period_start", "") or ""),
+                   "hospital_visit_id": str(getattr(self, "_hospital_visit_id", "") or "")}
         try:
             tmp = self._state_path() + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
@@ -606,6 +608,15 @@ class AmoMedicalPlugin(Star):
         exams = [x["name"] for x in hosp.exam_list(dept["id"])[:want]]
         clinic = {"普通": 15.0, "专家": 30.0, "特需": 80.0}.get(tier, 30.0)
         bill = hosp.visit(current.key, tier, exams, medicine=medicine, clinic_fee=clinic)
+        live = self._hospital_live()
+        if live and not getattr(self, "_hospital_visit_id", ""):
+            try:
+                reg = live.checkin(self._data_dir(), "阿墨", current.key, tier)
+                if reg.get("ok"):
+                    self._hospital_visit_id = str((reg.get("visit") or {}).get("id") or "")
+                    self._save()
+            except Exception as exc:
+                logger.debug("[amo_med] 实时挂号失败，继续按医院报价: %s", exc)
 
         return {
             "ok": True,
@@ -620,6 +631,7 @@ class AmoMedicalPlugin(Star):
             "items": bill["items"],
             "medicines": meds,
             "advice": plan.get("advice") or "",
+            "hospital_visit_id": str(getattr(self, "_hospital_visit_id", "") or ""),
             "hospital": {
                 "name": hosp.HOSPITAL["name"],
                 "floor": dept["floor"],
@@ -826,6 +838,17 @@ class AmoMedicalPlugin(Star):
                     "medicines": info.get("medicines") or [],
                     "advice": info.get("advice") or ""}
 
+        # 真正医院链：付款成功后才结束本次挂号；没付款就一直停在候诊/诊疗状态。
+        live = self._hospital_live()
+        visit_id = str(info.get("hospital_visit_id") or getattr(self, "_hospital_visit_id", "") or "")
+        if live and visit_id:
+            try:
+                live.finish_visit(self._data_dir(), visit_id, info.get("exams") or None,
+                                  float(sum(float(m.get("price") or 0) for m in (info.get("medicines") or []))),
+                                  30.0)
+            except Exception as exc:
+                logger.debug("[amo_med] 医院结诊记录失败: %s", exc)
+        self._hospital_visit_id = ""
         illness = get_illness(info["illness"])
         recovery_hours = max(2, int((illness.hours if illness else 12) / 2))
         # 病结束：状态进入「恢复中」，不再算 sick，后台循环也就不会重复来治
